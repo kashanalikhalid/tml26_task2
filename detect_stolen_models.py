@@ -21,6 +21,11 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
+from detect.adversarial import (
+    _predict as predict_argmax,
+    adversarial_transfer_features,
+    craft_pgd_adversaries,
+)
 from detect.behavioral import (
     behavioral_features,
     forward_logits,
@@ -51,6 +56,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-behavioral-features", action="store_true")
     parser.add_argument("--no-member-features", action="store_true",
                         help="Skip features that need train_main_idx.json (member/non-member probes).")
+    parser.add_argument("--no-adversarial-features", action="store_true",
+                        help="Skip the PGD adversarial-transfer feature group.")
+    parser.add_argument("--adv-n", type=int, default=2000,
+                        help="Number of test images to use for PGD attack (smaller = faster).")
+    parser.add_argument("--adv-epsilon", type=float, default=8.0 / 255.0)
+    parser.add_argument("--adv-alpha", type=float, default=2.0 / 255.0)
+    parser.add_argument("--adv-steps", type=int, default=10)
     return parser.parse_args()
 
 
@@ -103,6 +115,8 @@ def main() -> int:
     test_x = test_y = None
     member_x = member_y = nonmember_x = nonmember_y = None
     target_test_logits = target_member_logits = target_nm_logits = None
+    use_adv = not args.no_adversarial_features
+    adv_x = adv_y = target_adv_pred = target_clean_pred_adv = None
 
     if use_behavioral:
         logging.info("Building test probe set (cifar_root=%s, limit=%s)", args.cifar_root, args.probe_size)
@@ -128,6 +142,29 @@ def main() -> int:
         target_nm_logits = forward_logits(target, nonmember_x, args.batch_size, device)
         logging.info("Target member+nm forward in %.1fs", time.time() - t0)
 
+    if use_adv:
+        if test_x is None:
+            logging.info("Building probe set for adversarial attack")
+            test_x, test_y = build_probe_set(args.cifar_root, limit=args.probe_size, train=False)
+        n_adv = min(int(args.adv_n), test_x.size(0))
+        adv_x_clean = test_x[:n_adv]
+        adv_y = test_y[:n_adv]
+        logging.info("Crafting PGD adversaries on target (n=%d epsilon=%.4f steps=%d)",
+                     n_adv, args.adv_epsilon, args.adv_steps)
+        t0 = time.time()
+        adv_x = craft_pgd_adversaries(
+            target, adv_x_clean, adv_y,
+            epsilon=args.adv_epsilon,
+            alpha=args.adv_alpha,
+            steps=args.adv_steps,
+            batch_size=args.batch_size,
+            device=device,
+        )
+        target_adv_pred = predict_argmax(target, adv_x, args.batch_size, device)
+        target_clean_pred_adv = predict_argmax(target, adv_x_clean, args.batch_size, device)
+        attack_success = float((target_clean_pred_adv != target_adv_pred).float().mean().item())
+        logging.info("PGD attack ready in %.1fs (target attack success=%.3f)", time.time() - t0, attack_success)
+
     suspect_paths = discover_suspects(args.suspects)
     if not suspect_paths:
         logging.error("No suspect .safetensors files found under %s", args.suspects)
@@ -142,7 +179,7 @@ def main() -> int:
         try:
             sd = load_state_dict(path)
 
-            if use_behavioral or use_member:
+            if use_behavioral or use_member or use_adv:
                 model = build_model_on(sd, device)
                 if use_behavioral:
                     sus_test = forward_logits(model, test_x, args.batch_size, device)
@@ -157,6 +194,14 @@ def main() -> int:
                         target_member_logits, target_nm_logits,
                         sus_member, sus_nm,
                         member_y, nonmember_y,
+                    ))
+                if use_adv:
+                    suspect_adv_pred = predict_argmax(model, adv_x, args.batch_size, device)
+                    suspect_clean_pred = predict_argmax(model, test_x[:adv_x.size(0)], args.batch_size, device)
+                    row.update(adversarial_transfer_features(
+                        target_adv_pred, target_clean_pred_adv,
+                        suspect_adv_pred, suspect_clean_pred,
+                        adv_y,
                     ))
                 del model
                 if device.type == "cuda":

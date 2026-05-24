@@ -41,6 +41,12 @@ DEFAULT_FEATURE_SIGNS: dict[str, int] = {
     # Weight-space
     "weight_exact_tensor_frac": +1,
     "weight_l2_relative": -1,
+    # Adversarial transfer (ModelDiff-style PGD adversaries crafted on target)
+    "adv_transfer_class_match": +1,
+    "adv_transfer_fooled_any": +1,
+    # NOTE: adv_suspect_robust_true is intentionally NOT used -- both
+    # stolen and independents can be "robust" on adv examples crafted for
+    # target (independents because the perturbation is target-specific).
     # NOTE: weight_cosine_full is intentionally excluded -- 350/360 suspects
     # have weight_cosine_full > 0.99 so it contributes almost no signal.
 }

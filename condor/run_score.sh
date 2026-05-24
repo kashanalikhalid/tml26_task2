@@ -8,6 +8,9 @@
 #   2. Otherwise download into worker-local $SCRATCH/data and run from there.
 #      After a successful scoring pass, attempt a best-effort scratch->NFS
 #      copy so the next job can hit the cache.
+#
+# We download via python (urllib) because the pytorch base image doesn't
+# ship curl.
 
 set -euo pipefail
 
@@ -52,7 +55,7 @@ else
     DATA_ROOT="$SCRATCH/data"
     DOWNLOADED_FRESH=1
     echo "::: NFS cache incomplete; downloading into $DATA_ROOT"
-    TASK_DIR="$SCRATCH" PARALLEL="${PARALLEL:-8}" bash scripts/download_data.sh
+    TASK_DIR="$SCRATCH" PARALLEL="${PARALLEL:-8}" $PY -u scripts/download_data.py
 fi
 
 $PY -u detect_stolen_models.py \
@@ -76,7 +79,7 @@ wc -l outputs/submission.csv
 if [ "$DOWNLOADED_FRESH" = "1" ]; then
     echo "::: priming NFS cache (best-effort, may be slow under load)"
     mkdir -p "$TASK_DIR/data/target_model" "$TASK_DIR/data/suspect_models"
-    # Use rsync if available, else cp -a. Both are interruptible safely.
+    # rsync is available; cp -a fallback if not.
     if command -v rsync >/dev/null 2>&1; then
         rsync -a --ignore-existing "$SCRATCH/data/target_model/" "$TASK_DIR/data/target_model/" || true
         rsync -a --ignore-existing "$SCRATCH/data/suspect_models/" "$TASK_DIR/data/suspect_models/" || true

@@ -3,9 +3,8 @@
 # SprintML/tml26_task2 directly into ~/tml26_task2/data on the shared
 # home filesystem. Runs CPU-only, no GPU.
 #
-# We intentionally keep PARALLEL low because the shared NFS home is
-# write-contended; many concurrent writers serialize on commits, killing
-# throughput. A few streams with -C - resume cover network hiccups.
+# Uses scripts/download_data.py (pure stdlib) because the pytorch base
+# image doesn't ship curl.
 
 set -euo pipefail
 
@@ -14,11 +13,15 @@ TASK_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$TASK_DIR"
 
 export PYTHONUNBUFFERED=1
+PY=/opt/conda/bin/python
+
 echo "::: host=$(hostname)  uid=$(id -u)  task_dir=$TASK_DIR"
 df -h "$TASK_DIR" | head -2
+$PY -V
 
-echo "::: kicking off curl-based download into NFS at $TASK_DIR/data"
-TASK_DIR="$TASK_DIR" PARALLEL="${PARALLEL:-4}" bash scripts/download_data.sh
+echo "::: kicking off python-based download into NFS at $TASK_DIR/data"
+# Keep PARALLEL low because NFS writes are heavily contended on this cluster.
+TASK_DIR="$TASK_DIR" PARALLEL="${PARALLEL:-4}" $PY -u scripts/download_data.py
 
 echo
 echo "::: stage finished. final data summary:"

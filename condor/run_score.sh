@@ -62,9 +62,12 @@ $PY -u detect_stolen_models.py \
     --target "$DATA_ROOT/target_model/weights.safetensors" \
     --suspects "$DATA_ROOT/suspect_models" \
     --cifar-root "$SCRATCH/cifar100" \
+    --train-main-idx "$DATA_ROOT/target_model/train_main_idx.json" \
     --features-out outputs/features.csv \
     --submission-out outputs/submission.csv \
     --batch-size "${BATCH_SIZE:-256}" \
+    --n-members "${N_MEMBERS:-4000}" \
+    --n-nonmembers "${N_NONMEMBERS:-4000}" \
     ${PROBE_SIZE:+--probe-size $PROBE_SIZE} \
     ${LIMIT:+--limit $LIMIT}
 

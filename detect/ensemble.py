@@ -11,7 +11,7 @@ import pandas as pd
 
 # +1 means "higher feature value = more likely stolen". -1 inverts that.
 DEFAULT_FEATURE_SIGNS: dict[str, int] = {
-    # Behavioral
+    # Output-only behavioural (test-set probe)
     "behavioral_jsd": -1,
     "behavioral_sym_kl": -1,
     "behavioral_ce_to_target": -1,
@@ -19,11 +19,30 @@ DEFAULT_FEATURE_SIGNS: dict[str, int] = {
     "behavioral_top5_member": +1,
     "behavioral_logit_cosine": +1,
     "behavioral_logit_pearson": +1,
+    # Label-aware (test-set probe)
+    "behavioral_loss_corr_test": +1,
+    "behavioral_wrong_agree_test": +1,
+    "behavioral_correct_agree_test": +1,
+    "behavioral_loss_gap_abs_test": -1,
+    # Label-aware (member probe — target's training set)
+    "behavioral_loss_corr_member": +1,
+    "behavioral_wrong_agree_member": +1,
+    "behavioral_correct_agree_member": +1,
+    "behavioral_loss_gap_abs_member": -1,
+    # Label-aware (non-member probe — train images target didn't see)
+    "behavioral_loss_corr_nonmember": +1,
+    "behavioral_wrong_agree_nonmember": +1,
+    "behavioral_correct_agree_nonmember": +1,
+    "behavioral_loss_gap_abs_nonmember": -1,
+    # Membership-gap (target memorizes members, independents don't have the gap)
+    "behavioral_member_gap_diff_abs": -1,
+    "behavioral_member_loss_corr": +1,
+    "behavioral_nonmember_loss_corr": +1,
     # Weight-space
-    "weight_cosine_full": +1,
-    "weight_cosine_backbone": +1,
     "weight_exact_tensor_frac": +1,
     "weight_l2_relative": -1,
+    # NOTE: weight_cosine_full is intentionally excluded -- 350/360 suspects
+    # have weight_cosine_full > 0.99 so it contributes almost no signal.
 }
 
 
@@ -50,5 +69,8 @@ def ensemble_score(
     ranks = np.zeros(len(features), dtype=np.float64)
     for col in used:
         values = features[col].to_numpy(dtype=np.float64) * float(feature_signs[col])
+        # NaNs become "bottom of the pile" with sign already applied.
+        if np.isnan(values).any():
+            values = np.where(np.isnan(values), -np.inf, values)
         ranks += rank_normalize(values)
     return ranks / len(used)

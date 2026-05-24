@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """TML 2026 Task 2 stolen-model detector.
 
-Loads the target CIFAR ResNet-18 + each suspect, forwards a fixed probe set
-(CIFAR-100 test), then computes behavioral + weight-space features per suspect
-and writes:
+Loads the target CIFAR ResNet-18 + each suspect, forwards three probe sets
+(CIFAR-100 test, target's training members, target's training non-members),
+then computes behavioral + weight-space features per suspect and writes:
 
 * `outputs/features.csv` -- one row per suspect with every raw feature.
-* `outputs/submission.csv` -- two-column `id,score` file ready for the
-  TML 2026 leaderboard (rank-mean ensemble of the features in features.csv).
+* `outputs/submission.csv` -- two-column `id,score` ready for the
+  TML 2026 leaderboard (rank-mean ensemble of the features).
 """
 from __future__ import annotations
 
@@ -21,10 +21,15 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
-from detect.behavioral import behavioral_features, forward_logits
+from detect.behavioral import (
+    behavioral_features,
+    forward_logits,
+    label_aware_features,
+    member_gap_features,
+)
 from detect.ensemble import ensemble_score
-from detect.model import load_model, load_state_dict, make_model
-from detect.probe import build_probe_set
+from detect.model import load_state_dict, make_model
+from detect.probe import build_member_probes, build_probe_set
 from detect.weights import weight_features
 
 
@@ -33,15 +38,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", type=Path, default=Path("data/target_model/weights.safetensors"))
     parser.add_argument("--suspects", type=Path, default=Path("data/suspect_models"))
     parser.add_argument("--cifar-root", type=Path, default=Path("data/cifar100"))
+    parser.add_argument("--train-main-idx", type=Path, default=Path("data/target_model/train_main_idx.json"))
     parser.add_argument("--features-out", type=Path, default=Path("outputs/features.csv"))
     parser.add_argument("--submission-out", type=Path, default=Path("outputs/submission.csv"))
     parser.add_argument("--device", default=None, help="cuda / mps / cpu (auto if unset).")
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--probe-size", type=int, default=None, help="Limit probe images for smoke tests.")
-    parser.add_argument("--probe-train", action="store_true", help="Use CIFAR-100 train instead of test as the probe split.")
+    parser.add_argument("--probe-size", type=int, default=None, help="Limit test probe images for smoke tests.")
+    parser.add_argument("--n-members", type=int, default=4000, help="Sample size for the member probe set.")
+    parser.add_argument("--n-nonmembers", type=int, default=4000, help="Sample size for the non-member probe set.")
     parser.add_argument("--limit", type=int, default=None, help="Score only the first N suspects.")
     parser.add_argument("--no-weight-features", action="store_true")
     parser.add_argument("--no-behavioral-features", action="store_true")
+    parser.add_argument("--no-member-features", action="store_true",
+                        help="Skip features that need train_main_idx.json (member/non-member probes).")
     return parser.parse_args()
 
 
@@ -58,17 +67,23 @@ def pick_device(explicit: str | None) -> torch.device:
 def discover_suspects(suspects_root: Path) -> list[Path]:
     paths = sorted(suspects_root.glob("suspect_*.safetensors"))
     if not paths:
-        # Fall back to any safetensors in the directory (recursive).
         paths = sorted(suspects_root.rglob("*.safetensors"))
     return paths
 
 
 def suspect_id(path: Path) -> int:
-    stem = path.stem  # "suspect_037"
+    stem = path.stem
     try:
         return int(stem.split("_")[-1])
     except ValueError as exc:
         raise ValueError(f"Cannot parse suspect id from filename: {path.name}") from exc
+
+
+def build_model_on(state_dict: dict[str, torch.Tensor], device: torch.device) -> torch.nn.Module:
+    model = make_model()
+    model.load_state_dict(state_dict, strict=True)
+    model.eval().to(device)
+    return model
 
 
 def main() -> int:
@@ -79,21 +94,39 @@ def main() -> int:
 
     logging.info("Loading target from %s", args.target)
     target_sd = load_state_dict(args.target)
-    target = make_model()
-    target.load_state_dict(target_sd, strict=True)
-    target.eval().to(device)
+    target = build_model_on(target_sd, device)
 
-    target_logits: torch.Tensor | None = None
-    if not args.no_behavioral_features:
-        logging.info("Building probe set (cifar_root=%s, limit=%s, train=%s)",
-                     args.cifar_root, args.probe_size, args.probe_train)
-        probe_x, _probe_y = build_probe_set(args.cifar_root, limit=args.probe_size, train=args.probe_train)
-        logging.info("Probe set: %s images", probe_x.size(0))
+    # ----- probe sets -----
+    use_behavioral = not args.no_behavioral_features
+    use_member = not args.no_member_features and args.train_main_idx.exists()
+
+    test_x = test_y = None
+    member_x = member_y = nonmember_x = nonmember_y = None
+    target_test_logits = target_member_logits = target_nm_logits = None
+
+    if use_behavioral:
+        logging.info("Building test probe set (cifar_root=%s, limit=%s)", args.cifar_root, args.probe_size)
+        test_x, test_y = build_probe_set(args.cifar_root, limit=args.probe_size, train=False)
+        logging.info("Test probe: %d images", test_x.size(0))
         t0 = time.time()
-        target_logits = forward_logits(target, probe_x, args.batch_size, device)
-        logging.info("Target forward in %.1fs", time.time() - t0)
-    else:
-        probe_x = None
+        target_test_logits = forward_logits(target, test_x, args.batch_size, device)
+        logging.info("Target test-forward in %.1fs", time.time() - t0)
+
+    if use_member:
+        logging.info("Building member/non-member probes from %s (n_m=%d n_nm=%d)",
+                     args.train_main_idx, args.n_members, args.n_nonmembers)
+        (member_x, member_y), (nonmember_x, nonmember_y) = build_member_probes(
+            args.cifar_root,
+            args.train_main_idx,
+            n_members=args.n_members,
+            n_nonmembers=args.n_nonmembers,
+        )
+        logging.info("Member probe: %d images   Non-member probe: %d images",
+                     member_x.size(0), nonmember_x.size(0))
+        t0 = time.time()
+        target_member_logits = forward_logits(target, member_x, args.batch_size, device)
+        target_nm_logits = forward_logits(target, nonmember_x, args.batch_size, device)
+        logging.info("Target member+nm forward in %.1fs", time.time() - t0)
 
     suspect_paths = discover_suspects(args.suspects)
     if not suspect_paths:
@@ -109,12 +142,23 @@ def main() -> int:
         try:
             sd = load_state_dict(path)
 
-            if not args.no_behavioral_features:
-                assert probe_x is not None and target_logits is not None
-                model = load_model(path, device=device, state_dict=sd)
-                sus_logits = forward_logits(model, probe_x, args.batch_size, device)
-                row.update(behavioral_features(target_logits, sus_logits))
-                del model, sus_logits
+            if use_behavioral or use_member:
+                model = build_model_on(sd, device)
+                if use_behavioral:
+                    sus_test = forward_logits(model, test_x, args.batch_size, device)
+                    row.update(behavioral_features(target_test_logits, sus_test))
+                    row.update(label_aware_features(target_test_logits, sus_test, test_y, prefix="test"))
+                if use_member:
+                    sus_member = forward_logits(model, member_x, args.batch_size, device)
+                    sus_nm = forward_logits(model, nonmember_x, args.batch_size, device)
+                    row.update(label_aware_features(target_member_logits, sus_member, member_y, prefix="member"))
+                    row.update(label_aware_features(target_nm_logits, sus_nm, nonmember_y, prefix="nonmember"))
+                    row.update(member_gap_features(
+                        target_member_logits, target_nm_logits,
+                        sus_member, sus_nm,
+                        member_y, nonmember_y,
+                    ))
+                del model
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
 
@@ -131,7 +175,7 @@ def main() -> int:
     features = pd.DataFrame(rows).sort_values("id").reset_index(drop=True)
     args.features_out.parent.mkdir(parents=True, exist_ok=True)
     features.to_csv(args.features_out, index=False)
-    logging.info("Wrote %s (%d rows)", args.features_out, len(features))
+    logging.info("Wrote %s (%d rows, %d cols)", args.features_out, len(features), features.shape[1])
 
     scoring_features = features[features["status"] == "ok"] if "status" in features.columns else features
     if scoring_features.empty:
@@ -145,9 +189,9 @@ def main() -> int:
     submission.to_csv(args.submission_out, index=False)
     logging.info("Wrote %s (%d rows)", args.submission_out, len(submission))
 
-    print("\nTop-10 suspects by ensemble score:")
-    print(submission.sort_values("score", ascending=False).head(10).to_string(index=False))
-    print("\nBottom-5 (clearly not stolen, sanity check):")
+    print("\nTop-15 suspects by ensemble score:")
+    print(submission.sort_values("score", ascending=False).head(15).to_string(index=False))
+    print("\nBottom-5:")
     print(submission.sort_values("score", ascending=False).tail(5).to_string(index=False))
     return 0
 

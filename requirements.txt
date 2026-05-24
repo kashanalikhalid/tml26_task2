@@ -1,4 +1,7 @@
 torch
 torchvision
-tqdm
 safetensors
+tqdm
+numpy
+pandas
+huggingface_hub

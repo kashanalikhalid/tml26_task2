@@ -7,11 +7,20 @@ __pycache__/
 .venv/
 venv/
 
-data/target/*
-!data/target/.gitkeep
-data/suspects/*
-!data/suspects/.gitkeep
+# Data and model checkpoints (downloaded from SprintML/tml26_task2 on HF).
+data/*
+!data/README.md
+!data/.gitkeep
+
+# Local artifacts.
 outputs/*
 !outputs/.gitkeep
 
+# Never commit the leaderboard API key.
+.submission_api_key
+*.api_key
+
 *.log
+
+# Course-provided PDFs (assignment briefs etc.) — keep locally, don't redistribute.
+*.pdf

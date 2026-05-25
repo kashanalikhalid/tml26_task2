@@ -13,6 +13,31 @@ Public set: 30% of 360 suspects = ~108 models, of which ~27 are stolen
 | 1 | 25.05 ~21:42 | 1625 | exp01 baseline (all weight features + behavioral) | **0.407407** | 50/51 | First submission. weight_cosine_full is mostly noise (350/360 suspects >0.99). |
 | 2 | 25.05 ~22:47 | 1634 | exp02 no_noisy_weights (variant C) | **0.518519** | 47/53 | Dropped weight_cosine_full, weight_cosine_backbone, weight_keys_match. **+0.111** improvement, **CURRENT BEST**. |
 | 3 | 25.05 ~01:00 | 1656 | exp03 member_aware | **≤0.518** | unchanged | Added member/non-member loss correlation, wrong_agree, member_gap. Server kept variant C. Diagnosis: too many weak features dilute rank-mean. |
+| 4 | 25.05 ~02:53 | 1667 | exp06 cka (penultimate-layer Linear CKA) | **≤0.518** | unchanged | CKA=1.0 for 30+ models (functionally identical to target) -- doesn't discriminate within the cluster. CKA brought in 5 new IDs to top-30 (8, 169, 244, 259, 295) and dropped 5 (4, 81, 83, 105, 109), but the swap didn't capture more stolen-in-public. |
+
+## All cluster experiments completed by 02:54
+
+| Cluster Job | Experiment | Output | Notes |
+|---|---|---|---|
+| 161587 | exp04 PGD-weak | (lost — disk full at write time) | |
+| 161588 | exp05 PGD-strong (ε=16/255, 20 steps) | outputs/exp05/ | top-30 same as exp02 + {169, 244, 295} new |
+| 161589 | exp06 CKA | outputs/exp06/ | already submitted |
+| 161590 | exp07 CKA + PGD-strong combined | outputs/exp07/ | top-30 same as exp02 + {169, 244, 295} new |
+| 161584/86 zombies | run_score.sh restarted from scratch | outputs/{features,submission}.csv | member+PGD-weak, current ensemble |
+
+## Consensus diagnosis after 4 experiments
+
+- **3 ID consensus**: 169, 244, 295 consistently appear in top-30 of every method that uses member+adversarial features. These are very likely true stolen models that variant C missed.
+- **Exp06 (CKA) added 2 extra IDs (8, 259) on top of those 3, but didn't improve the leaderboard** — at least one of {8, 259} is a false positive that displaced a real stolen model.
+- **The narrow rank-mean / median / q25 ensembles all converge to the same top-30** = exp02 ∪ {169, 244, 295}. Likely score: same 0.518 if those 3 are split between stolen/not in public, or up to 0.629 if all 3 are public-stolen.
+- **`exp07_plus_min` is the high-variance bet** — adds 18 new IDs by demanding consistency across all features. Upside: huge if the conservative ones cluster around real stolen-in-public; Downside: no change (server keeps the best).
+
+## Local laptop pipeline working
+
+- 16 GB SprintML/tml26_task2 fully downloaded at ~02:49 (12.5 min).
+- Smoke test on MPS (5 suspects): 17s, working correctly.
+- exp07 local re-run started 02:51, ETA ~03:50 (PGD slows MPS — ~8s/suspect).
+- All future iterations are ~15-50 min purely local, no cluster nonsense.
 
 ## In-flight Condor jobs
 

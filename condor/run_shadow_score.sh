@@ -14,12 +14,12 @@ PYTHONUSERBASE="$USER_BASE" $PY -m pip install --quiet --user safetensors pandas
 USER_SITE=$(PYTHONUSERBASE="$USER_BASE" $PY -c 'import site; print(site.getusersitepackages())')
 export PYTHONPATH="${USER_SITE}:${PYTHONPATH:-}"
 DATA_ROOT="$TASK_DIR/data"
-SHADOWS=$(ls outputs/shadows/shadow_*.safetensors 2>/dev/null | tr '\n' ' ')
-echo "::: shadows: $SHADOWS"
-if [ -z "$SHADOWS" ]; then echo "ERROR: no shadows!"; exit 1; fi
+N=$(ls outputs/shadow_stats/shadow_*.npz 2>/dev/null | wc -l)
+echo "::: found $N shadow stats files"
+if [ "$N" -lt 4 ]; then echo "ERROR: too few shadow stats!"; exit 1; fi
 $PY -u experiments/exp14_shadow_score.py \
     --target "$DATA_ROOT/target_model/weights.safetensors" \
-    --shadows $SHADOWS \
+    --shadow-stats-glob 'outputs/shadow_stats/shadow_*.npz' \
     --suspects "$DATA_ROOT/suspect_models" \
     --cifar-root "$SCRATCH/cifar100" \
     --train-main-idx "$DATA_ROOT/target_model/train_main_idx.json" \

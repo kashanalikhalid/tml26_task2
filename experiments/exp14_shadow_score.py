@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Experiment 14 — LiRA-style scoring using shadow models.
+"""Experiment 14 — LiRA-style scoring using *probe statistics* from N shadows.
 
-Loads M shadow ResNet-18s (trained by exp13 on the same train subset
-target was trained on, with different seeds) and computes, for each
-suspect, a likelihood-ratio-style score:
+Each shadow (trained by exp13) emits a small .npz with per-sample top-1
+prediction, top-1 confidence, and CE loss on three probe sets. We use
+this distribution to compute, for each suspect, z-score-like features:
 
-  z_i = (sim_to_target(i) - mean(sim_to_shadows(i))) / std(sim_to_shadows(i))
-
-A suspect that is *much* more similar to target than to typical shadows
-gets a large positive z -- statistical evidence of stealing rather than
-just same-data-different-seed.
-
-We compute the score with several base similarity measures (per-sample
-loss correlation, top-1 agreement on member set, JSD on test set, ...)
-and merge them with our existing ensemble.
+  - shadow_loss_corr_member_z:  Pearson(target_per_sample_loss, suspect_per_sample_loss) on member set,
+                                z-scored against the same Pearson for the
+                                target-vs-shadow pairs. Higher = more stolen-like.
+  - shadow_top1_member_z:       Fraction of member samples on which suspect predicts target's exact top-1,
+                                z-scored against the shadow-vs-target distribution.
+  - shadow_target_specific_pred_match_z:  On samples where target's top-1 is rare among shadows (target-specific),
+                                how often does suspect match target? Z-scored.
+  - shadow_loss_pattern_l2_z:   L2 distance between target's and suspect's per-sample loss vectors on member set,
+                                z-scored against shadow distribution. Lower = more stolen-like (we use negative sign).
 """
 from __future__ import annotations
 
-import argparse, json, logging, sys, time
+import argparse, glob, logging, sys, time
 from pathlib import Path
 
 import numpy as np
@@ -27,9 +27,7 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from detect.behavioral import (  # noqa: E402
-    behavioral_features, forward_logits, label_aware_features, member_gap_features,
-)
+from detect.behavioral import behavioral_features, forward_logits, label_aware_features, member_gap_features  # noqa: E402
 from detect.model import load_state_dict, make_model  # noqa: E402
 from detect.probe import build_member_probes, build_probe_set  # noqa: E402
 from detect.weights import weight_features  # noqa: E402
@@ -40,19 +38,15 @@ SIGNS = {
     "behavioral_jsd": -1, "behavioral_wrong_agree_test": +1,
     "behavioral_loss_corr_member": +1, "behavioral_member_gap_diff_abs": -1,
     "weight_exact_tensor_frac": +1, "weight_l2_relative": -1,
-    # Shadow-based LiRA features (high = stolen)
-    "lira_z_loss_corr_member": +1,
-    "lira_z_jsd_test": +1,
-    "lira_z_top1_member": +1,
-    "lira_z_wrong_agree_test": +1,
+    "shadow_loss_corr_member_z": +1,
+    "shadow_top1_member_z": +1,
+    "shadow_target_specific_pred_match_z": +1,
+    "shadow_loss_pattern_l2_z": -1,
 }
 
 
 def rn(v):
-    n = len(v)
-    o = v.argsort()
-    r = np.empty(n)
-    r[o] = np.arange(n)
+    n = len(v); o = v.argsort(); r = np.empty(n); r[o] = np.arange(n)
     return r / max(n - 1, 1)
 
 
@@ -63,40 +57,17 @@ def ensemble(df):
 
 
 def pearson(a, b):
-    ac = a - a.mean()
-    bc = b - b.mean()
-    return float((ac * bc).sum() / (ac.norm() * bc.norm() + 1e-12))
-
-
-def pairwise_sim(target_log, target_member_log, target_y_member, suspect_log, suspect_member_log):
-    """Return dict of similarity measurements between target and suspect (per-test-set probe + per-member probe)."""
-    # JSD on test logits
-    tp = F.softmax(target_log, dim=1)
-    sp = F.softmax(suspect_log, dim=1)
-    eps = 1e-30
-    mid = 0.5 * (tp + sp)
-    midlog = mid.clamp_min(eps).log()
-    jsd = 0.5 * ((tp * ((tp + eps).log() - midlog)).sum(1)
-                 + (sp * ((sp + eps).log() - midlog)).sum(1))
-    jsd_mean = float(jsd.mean().item())
-    # Per-sample loss correlation on member set
-    tl = F.cross_entropy(target_member_log, target_y_member, reduction='none')
-    sl = F.cross_entropy(suspect_member_log, target_y_member, reduction='none')
-    loss_corr = pearson(tl, sl)
-    # Top-1 agreement on member set (does suspect predict what target predicts?)
-    top1 = float((target_member_log.argmax(1) == suspect_member_log.argmax(1)).float().mean().item())
-    # Wrong-prediction agreement on test
-    t_top1 = target_log.argmax(1)
-    s_top1 = suspect_log.argmax(1)
-    return {"jsd_test": jsd_mean, "loss_corr_member": loss_corr, "top1_member": top1,
-            "wrong_agree_test": float((t_top1 == s_top1).float().mean().item())}
+    a = np.asarray(a); b = np.asarray(b)
+    ac = a - a.mean(); bc = b - b.mean()
+    return float((ac * bc).sum() / (np.linalg.norm(ac) * np.linalg.norm(bc) + 1e-12))
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser()
     p.add_argument("--target", type=Path, default=Path("data/target_model/weights.safetensors"))
-    p.add_argument("--shadows", type=Path, nargs="+", required=True, help="paths to shadow .safetensors")
+    p.add_argument("--shadow-stats-glob", default="outputs/shadow_stats/shadow_*.npz",
+                   help="Glob pattern for the .npz files produced by exp13.")
     p.add_argument("--suspects", type=Path, default=Path("data/suspect_models"))
     p.add_argument("--cifar-root", type=Path, default=Path("data/cifar100"))
     p.add_argument("--train-main-idx", type=Path, default=Path("data/target_model/train_main_idx.json"))
@@ -108,40 +79,58 @@ def main():
     p.add_argument("--n-nonmembers", type=int, default=4000)
     args = p.parse_args()
     device = torch.device(args.device) if args.device else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
-    logging.info("[exp14] device=%s n_shadows=%d", device, len(args.shadows))
+    logging.info("[exp14] device=%s", device)
 
+    # ----- Load shadows' probe stats -----
+    shadow_files = sorted(glob.glob(args.shadow_stats_glob))
+    if not shadow_files:
+        raise SystemExit(f"No shadow stats found at {args.shadow_stats_glob}")
+    shadows = [np.load(f) for f in shadow_files]
+    logging.info("loaded %d shadow stats", len(shadows))
+
+    # ----- Target probe forwards -----
     target_sd = load_state_dict(args.target)
     target = make_model(); target.load_state_dict(target_sd, strict=True); target.eval().to(device)
-
     test_x, test_y = build_probe_set(args.cifar_root, train=False)
-    (member_x, member_y), (nonmember_x, nonmember_y) = build_member_probes(
+    (mem_x, mem_y), (nm_x, nm_y) = build_member_probes(
         args.cifar_root, args.train_main_idx,
         n_members=args.n_members, n_nonmembers=args.n_nonmembers,
     )
 
     t_test = forward_logits(target, test_x, args.batch_size, device)
-    t_member = forward_logits(target, member_x, args.batch_size, device)
-    t_nm = forward_logits(target, nonmember_x, args.batch_size, device)
+    t_mem = forward_logits(target, mem_x, args.batch_size, device)
+    t_nm = forward_logits(target, nm_x, args.batch_size, device)
+    t_mem_loss = F.cross_entropy(t_mem, mem_y, reduction='none').cpu().numpy()
+    t_mem_top1 = t_mem.argmax(1).cpu().numpy()
 
-    # ----- Compute shadow→target reference statistics -----
-    # For each shadow, run the same suite of similarity measurements vs target.
-    # This gives us a distribution of "what does same-data-different-seed look like".
-    shadow_sims = []  # list of dicts
-    for sp_path in args.shadows:
-        logging.info("loading shadow %s", sp_path)
-        sd = load_state_dict(sp_path)
-        sm = make_model(); sm.load_state_dict(sd, strict=True); sm.eval().to(device)
-        s_test = forward_logits(sm, test_x, args.batch_size, device)
-        s_member = forward_logits(sm, member_x, args.batch_size, device)
-        sims = pairwise_sim(t_test, t_member, member_y, s_test, s_member)
-        logging.info("shadow vs target sims: %s", {k: f"{v:.4f}" for k, v in sims.items()})
-        shadow_sims.append(sims)
-        del sm
-    keys = list(shadow_sims[0].keys())
-    shadow_means = {k: float(np.mean([s[k] for s in shadow_sims])) for k in keys}
-    shadow_stds = {k: float(np.std([s[k] for s in shadow_sims]) + 1e-6) for k in keys}
-    logging.info("shadow distribution means=%s", shadow_means)
-    logging.info("shadow distribution stds =%s", shadow_stds)
+    # Shadows' loss correlations / top-1 agreements with target (reference distribution)
+    shadow_loss_corrs = []
+    shadow_top1s = []
+    shadow_l2s = []
+    shadow_top1_mem_preds_list = []
+    for sh in shadows:
+        shadow_loss_corrs.append(pearson(t_mem_loss, sh["mem_loss"]))
+        shadow_top1s.append(float(np.mean(sh["mem_top1"] == t_mem_top1)))
+        shadow_l2s.append(float(np.linalg.norm(t_mem_loss - sh["mem_loss"])))
+        shadow_top1_mem_preds_list.append(sh["mem_top1"])
+    sh_loss_corr_mean, sh_loss_corr_std = float(np.mean(shadow_loss_corrs)), float(np.std(shadow_loss_corrs) + 1e-6)
+    sh_top1_mean, sh_top1_std = float(np.mean(shadow_top1s)), float(np.std(shadow_top1s) + 1e-6)
+    sh_l2_mean, sh_l2_std = float(np.mean(shadow_l2s)), float(np.std(shadow_l2s) + 1e-6)
+    logging.info("shadow ref distributions:")
+    logging.info("  loss_corr (vs target): mean=%.4f std=%.4f", sh_loss_corr_mean, sh_loss_corr_std)
+    logging.info("  top1_member  (vs target): mean=%.4f std=%.4f", sh_top1_mean, sh_top1_std)
+    logging.info("  l2_loss_pattern (vs target): mean=%.4f std=%.4f", sh_l2_mean, sh_l2_std)
+
+    # Per-sample target-specific predictions
+    # For each test sample, what fraction of shadows predict the SAME class as target?
+    # If <= 0.5 (target's prediction is rare among shadows), that sample is "target-specific".
+    # Stolen models tend to share target's rare predictions.
+    shadow_test_top1 = np.stack([sh["test_top1"] for sh in shadows], axis=0)  # (N_shadows, N_test)
+    t_test_top1 = t_test.argmax(1).cpu().numpy()
+    shadow_match_target = (shadow_test_top1 == t_test_top1[None, :]).mean(axis=0)  # (N_test,)
+    rare_mask = shadow_match_target <= 0.5  # boolean, target-specific predictions
+    logging.info("target-specific predictions on test: %d / %d (%.1f%%)",
+                 int(rare_mask.sum()), len(rare_mask), 100.0 * rare_mask.mean())
 
     # ----- Score suspects -----
     paths = sorted(args.suspects.glob("suspect_*.safetensors"))
@@ -152,29 +141,47 @@ def main():
             sd = load_state_dict(path)
             m = make_model(); m.load_state_dict(sd, strict=True); m.eval().to(device)
             s_test = forward_logits(m, test_x, args.batch_size, device)
-            s_member = forward_logits(m, member_x, args.batch_size, device)
-            s_nm = forward_logits(m, nonmember_x, args.batch_size, device)
+            s_mem = forward_logits(m, mem_x, args.batch_size, device)
+            s_nm = forward_logits(m, nm_x, args.batch_size, device)
             row.update(behavioral_features(t_test, s_test))
             row.update(label_aware_features(t_test, s_test, test_y, prefix="test"))
-            row.update(label_aware_features(t_member, s_member, member_y, prefix="member"))
-            row.update(member_gap_features(t_member, t_nm, s_member, s_nm, member_y, nonmember_y))
-            sims = pairwise_sim(t_test, t_member, member_y, s_test, s_member)
-            # LiRA-style z-scores
-            for k, v in sims.items():
-                # For "loss_corr_member", "top1_member", "wrong_agree_test": stolen models have HIGHER sim than shadows → high z is stolen
-                # For "jsd_test": stolen models have LOWER jsd than shadows (closer match) → low z stolen → we use NEGATIVE z direction.
-                z = (v - shadow_means[k]) / shadow_stds[k]
-                if k == "jsd_test":
-                    z = -z  # invert so higher = more stolen
-                row[f"lira_z_{k}"] = float(z)
+            row.update(label_aware_features(t_mem, s_mem, mem_y, prefix="member"))
+            row.update(member_gap_features(t_mem, t_nm, s_mem, s_nm, mem_y, nm_y))
             row.update(weight_features(target_sd, sd))
+
+            s_mem_loss = F.cross_entropy(s_mem, mem_y, reduction='none').cpu().numpy()
+            s_mem_top1 = s_mem.argmax(1).cpu().numpy()
+            s_test_top1 = s_test.argmax(1).cpu().numpy()
+
+            # LiRA z-scores
+            sus_loss_corr = pearson(t_mem_loss, s_mem_loss)
+            row["shadow_loss_corr_member_z"] = (sus_loss_corr - sh_loss_corr_mean) / sh_loss_corr_std
+            sus_top1 = float(np.mean(s_mem_top1 == t_mem_top1))
+            row["shadow_top1_member_z"] = (sus_top1 - sh_top1_mean) / sh_top1_std
+            sus_l2 = float(np.linalg.norm(t_mem_loss - s_mem_loss))
+            row["shadow_loss_pattern_l2_z"] = (sus_l2 - sh_l2_mean) / sh_l2_std
+
+            # Target-specific prediction match rate
+            # Among samples where target's prediction is rare in shadow distribution,
+            # what fraction does suspect ALSO match target's prediction?
+            if rare_mask.any():
+                sus_specific_match = float(np.mean(s_test_top1[rare_mask] == t_test_top1[rare_mask]))
+                # Shadow reference for the same statistic
+                shadow_specific_matches = [
+                    float(np.mean(sh["test_top1"][rare_mask] == t_test_top1[rare_mask])) for sh in shadows
+                ]
+                sm_mean, sm_std = float(np.mean(shadow_specific_matches)), float(np.std(shadow_specific_matches) + 1e-6)
+                row["shadow_target_specific_pred_match_z"] = (sus_specific_match - sm_mean) / sm_std
+                row["shadow_target_specific_pred_match_raw"] = sus_specific_match
+            else:
+                row["shadow_target_specific_pred_match_z"] = 0.0
+
             del m
             if device.type == "cuda":
                 torch.cuda.empty_cache()
         except Exception as e:
             logging.exception("suspect %s failed", path)
-            row["status"] = "error"
-            row["error"] = str(e)
+            row["status"] = "error"; row["error"] = str(e)
         rows.append(row)
 
     df = pd.DataFrame(rows).sort_values("id").reset_index(drop=True)

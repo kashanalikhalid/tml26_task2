@@ -14,6 +14,7 @@ Public set: 30% of 360 suspects = ~108 models, of which ~27 are stolen
 | 2 | 25.05 ~22:47 | 1634 | exp02 no_noisy_weights (variant C) | **0.518519** | 47/53 | Dropped weight_cosine_full, weight_cosine_backbone, weight_keys_match. **+0.111** improvement, **CURRENT BEST**. |
 | 3 | 25.05 ~01:00 | 1656 | exp03 member_aware | **≤0.518** | unchanged | Added member/non-member loss correlation, wrong_agree, member_gap. Server kept variant C. Diagnosis: too many weak features dilute rank-mean. |
 | 4 | 25.05 ~02:53 | 1667 | exp06 cka (penultimate-layer Linear CKA) | **≤0.518** | unchanged | CKA=1.0 for 30+ models (functionally identical to target) -- doesn't discriminate within the cluster. CKA brought in 5 new IDs to top-30 (8, 169, 244, 259, 295) and dropped 5 (4, 81, 83, 105, 109), but the swap didn't capture more stolen-in-public. |
+| 5 | 25.05 ~03:54 | 1671 | exp07_plus_min (MIN-rank fusion 15 features, 18 new IDs in top-30) | **≤0.518** | unchanged | Aggressive MIN-fusion replacing 18 of top-30 IDs didn't help. **Strong evidence we've saturated this entire feature regime.** All 5+ test-set / member-aware / CKA / PGD experiments converge to top-30 = exp02 ∪ {169, 244, 295}, and that ceiling is 0.518 on public. |
 
 ## All cluster experiments completed by 02:54
 

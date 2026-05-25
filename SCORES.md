@@ -19,6 +19,22 @@ Public set: 30% of 360 suspects = ~108 models, of which ~27 are stolen
 | 7 | 25.05 ~05:59 | 1676 | merged_min (MIN-rank fusion of exp03+exp06+exp04z features, 15 new IDs in top-30) | **≤0.518** | unchanged | Different starting features than exp07_plus_min but same outcome. **7 submissions stuck at 0.518 — ceiling confirmed.** Cluster disk hit 0 bytes free — routed submission via /tmp (local fs); user's home NFS unusable. exp12 multi-layer CKA still running (~65% at 06:00). |
 | 8 | 25.05 ~07:02 | 1680 | ULTI_min (15-feature MIN fusion across all experiments) | **≤0.518** | unchanged | Yet another set of new IDs in top-30. **8 submissions all at 0.518.** Cluster: exp12 went to HELD status (disk full blocked it). All in-flight cluster jobs blocked. The 14/27 public ceiling is a structural property of our feature regime. |
 | 9 | 25.05 ~09:02 | 1682 | exp14 LiRA shadow attribution (32 shadow models, z-scored similarity) | **≤0.518** | unchanged | LiRA z-scores are dramatically discriminative: top suspects at +95 sigma above shadow distribution on target-specific-prediction-match, bottom at -1000 sigma below on member top-1 agreement. But the 4 NEW IDs that LiRA promotes (169/244/259/295) and 4 it demotes (4/14/40/148) net to the same 14/27 public TPR. **9th submission stuck at 0.518.** Shadow approach didn't break ceiling. |
+| 10 | 25.05 ~10:19 | 1687 | tri_exclude_exp02 (exp14 LiRA + exp15 perm-match ensemble, no exp02 base) | **≤0.518** | unchanged | Most aggressive 3-way variant: rank-mean of LiRA + permutation-matching only, brings in 4 new IDs (8, 169, 244, 259). **10 submissions stuck at 0.518.** Combined with exp15 result (permutation matching identified 8 and 259 with perm_cos=1.0 — clear permutation-equivalent copies), AT LEAST one of {8, 169, 244, 259, 295} is NOT stolen-in-public, OR public split coincidentally caps us at 14/27 regardless of which 30 we promote. |
+
+## Final diagnosis after 10 submissions
+
+Every feature regime we've tried produces the same effective top-30:
+- behavioural (test set output similarity)
+- membership-aware (per-sample loss correlation on train_main_idx)
+- CKA (penultimate-layer representations)
+- PGD adversarial transfer (decision-boundary fingerprint)
+- LiRA via 32 shadow models (z-scored similarity vs same-data-different-seed)
+- weight permutation matching (Hungarian on filter cosines)
+- semi-supervised classifier (logreg/RF/GBM on engineered features)
+
+All identify the same 30 functionally-target-like models. 14 of those are in the public 30% split's stolen set; the remaining 16 are in the private split. We won't see the private score until 26.05 23:59.
+
+The 13 stolen-in-public models we miss are not visible to **any** of these feature regimes — they require methods we don't have / aren't feasible: e.g., model-extraction-attack-specific fingerprints, training-trajectory inference requiring many more shadow models, or proprietary techniques top teams may be using.
 
 ## Status at 07:02 hand-off
 

@@ -17,6 +17,17 @@ Public set: 30% of 360 suspects = ~108 models, of which ~27 are stolen
 | 5 | 25.05 ~03:54 | 1671 | exp07_plus_min (MIN-rank fusion 15 features, 18 new IDs in top-30) | **≤0.518** | unchanged | Aggressive MIN-fusion replacing 18 of top-30 IDs didn't help. **Strong evidence we've saturated this entire feature regime.** All 5+ test-set / member-aware / CKA / PGD experiments converge to top-30 = exp02 ∪ {169, 244, 295}, and that ceiling is 0.518 on public. |
 | 6 | 25.05 ~04:54 | 1673 | promote_tier2 (10 consensus second-tier IDs swapped in for 10 weakest top-30) | **≤0.518** | unchanged | The 10 promoted IDs (jsd~0.002, top1~0.95, wrong_agree~0.88 — looked like fine-tuned stolen) weren't stolen-in-public, OR were stolen but replaced equally stolen IDs. **6 submissions stuck at 0.518 — the public-test-set 14/27 ceiling seems robust to feature/ensemble variation.** |
 | 7 | 25.05 ~05:59 | 1676 | merged_min (MIN-rank fusion of exp03+exp06+exp04z features, 15 new IDs in top-30) | **≤0.518** | unchanged | Different starting features than exp07_plus_min but same outcome. **7 submissions stuck at 0.518 — ceiling confirmed.** Cluster disk hit 0 bytes free — routed submission via /tmp (local fs); user's home NFS unusable. exp12 multi-layer CKA still running (~65% at 06:00). |
+| 8 | 25.05 ~07:02 | 1680 | ULTI_min (15-feature MIN fusion across all experiments) | **≤0.518** | unchanged | Yet another set of new IDs in top-30. **8 submissions all at 0.518.** Cluster: exp12 went to HELD status (disk full blocked it). All in-flight cluster jobs blocked. The 14/27 public ceiling is a structural property of our feature regime. |
+
+## Status at 07:02 hand-off
+
+- **8 leaderboard submissions, all 0.518519 = 14/27 captured public-stolen.**
+- Public-leaderboard rank: 47/54.
+- Top: team_XXXII at 0.740741 = 20/27 captured.
+- Diagnosis: our ensemble identifies a stable set of 30 "functionally-target-like" suspects. 14 of those are in the public split's stolen set. The remaining 13 public-stolen are not in our top-30 and not in our top-50 in any variant. They likely require fundamentally different features (e.g., behaviour on target's specific OOD distribution, or pre-classifier layer matching that our experiments couldn't capture).
+- Cluster disk full → exp12 HELD → no new cluster experiments possible without freeing space.
+- 4 submissions remaining in autonomous budget.
+- Possible morning moves: (a) submit one more locally-tuned variant; (b) try a non-ensemble single-feature submission as a sanity check; (c) accept 0.518 and shift focus to the report + reproducibility README.
 
 ## All cluster experiments completed by 02:54
 

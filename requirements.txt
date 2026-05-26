@@ -1,7 +1,7 @@
 torch
 torchvision
 safetensors
-tqdm
 numpy
 pandas
+tqdm
 huggingface_hub

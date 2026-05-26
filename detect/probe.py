@@ -1,16 +1,4 @@
-"""Probe-set construction for behavioral fingerprinting.
-
-We use three probe sets:
-  - test:       CIFAR-100 test split. None are training data for the target,
-                so behavioural similarity here isolates stealing signal from
-                data-overlap noise.
-  - member:     The subset of CIFAR-100 *train* the target was trained on
-                (given by train_main_idx.json). Stolen models inherit the
-                target's specific memorization pattern on these samples.
-  - nonmember:  CIFAR-100 train samples the target did NOT see. Independents
-                trained on the full train split have low loss on these;
-                stolen models inherit the target's higher loss pattern.
-"""
+"""CIFAR-100 probe sets: test split, target's train members, train non-members."""
 from __future__ import annotations
 
 import json
@@ -55,28 +43,19 @@ def build_member_probes(
     n_nonmembers: int | None = None,
     download: bool = True,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
-    """Split CIFAR-100 train into target's training members and non-members.
-
-    Returns ((member_x, member_y), (nonmember_x, nonmember_y)) tensors.
-    Both subsets are downsampled to `n_members` / `n_nonmembers` if given,
-    using deterministic ordering so the probe set is identical across runs.
-    """
-    with open(train_main_idx_path, "r") as fh:
+    with open(train_main_idx_path) as fh:
         member_idx = sorted(set(int(i) for i in json.load(fh)))
     member_set = set(member_idx)
 
     dataset = datasets.CIFAR100(
-        root=str(cifar_root),
-        train=True,
-        download=download,
-        transform=_transform(),
+        root=str(cifar_root), train=True, download=download, transform=_transform(),
     )
     nonmember_idx = [i for i in range(len(dataset)) if i not in member_set]
 
     if n_members is not None:
-        member_idx = member_idx[: int(n_members)]
+        member_idx = member_idx[:int(n_members)]
     if n_nonmembers is not None:
-        nonmember_idx = nonmember_idx[: int(n_nonmembers)]
+        nonmember_idx = nonmember_idx[:int(n_nonmembers)]
 
     def stack(ids: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
         xs = torch.stack([dataset[i][0] for i in ids])

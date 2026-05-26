@@ -25,3 +25,6 @@ runlogs/
 
 # Course-provided PDFs.
 *.pdf
+
+# Submission archives.
+*.zip
